@@ -1,0 +1,10 @@
+{
+  "port": 40000,
+  "rooms": [
+    "room-a",
+    "room-b",
+    "room-c"
+  ],
+  "maxUsersPerRoom": 16,
+  "sharedToken": null
+}

@@ -1,0 +1,36 @@
+# Build outputs
+bin/
+obj/
+
+# Rider / JetBrains
+.idea/
+
+# Visual Studio / VS Code
+.vs/
+*.user
+*.suo
+*.cache
+
+# Logs
+*.log
+
+# Dotnet artifacts
+*.nupkg
+*.snupkg
+*.svclog
+
+# Publish artifacts
+publish/
+
+# Local settings
+appsettings.*.json
+
+# Avalonia designer cache
+*.axaml.cs.bin
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini

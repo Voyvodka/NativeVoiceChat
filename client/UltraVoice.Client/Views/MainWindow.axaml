@@ -1,0 +1,122 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:viewModels="clr-namespace:UltraVoice.Client.ViewModels"
+        x:Class="UltraVoice.Client.Views.MainWindow"
+        Width="1024"
+        Height="640"
+        MinWidth="960"
+        MinHeight="600"
+        Title="UltraVoice"
+        mc:Ignorable="d">
+    <Design.DataContext>
+        <viewModels:MainWindowViewModel />
+    </Design.DataContext>
+
+    <Grid ColumnDefinitions="240,*"
+          RowDefinitions="Auto,*,Auto">
+        <!-- Top bar -->
+        <Border Grid.ColumnSpan="2"
+                Background="{DynamicResource ThemeBackgroundBrush}"
+                BorderBrush="{DynamicResource ThemeBorderLowBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="12">
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <ComboBox Width="180"
+                          ItemsSource="{Binding InputDevices}"
+                          SelectedItem="{Binding SelectedInputDevice, Mode=TwoWay}"
+                          PlaceholderText="Input device" />
+                <ComboBox Width="180"
+                          ItemsSource="{Binding OutputDevices}"
+                          SelectedItem="{Binding SelectedOutputDevice, Mode=TwoWay}"
+                          PlaceholderText="Output device" />
+                <Slider Width="160"
+                        Minimum="-12"
+                        Maximum="12"
+                        Value="{Binding InputGainDb, Mode=TwoWay}"
+                        TickFrequency="1"
+                        IsSnapToTickEnabled="True" />
+                <TextBlock VerticalAlignment="Center"
+                           Text="{Binding ConnectionStatus}" />
+                <TextBlock VerticalAlignment="Center"
+                           Text="{Binding TelemetrySummary}"
+                           Margin="12,0,0,0" />
+            </StackPanel>
+        </Border>
+
+        <!-- Room list -->
+        <StackPanel Grid.Row="1"
+                    Margin="12"
+                    Spacing="8">
+            <ItemsControl ItemsSource="{Binding Rooms}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Button Command="{Binding DataContext.JoinRoomCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                CommandParameter="{Binding RoomId}"
+                                HorizontalContentAlignment="Stretch">
+                            <DockPanel>
+                                <TextBlock Text="{Binding RoomId}"
+                                           FontWeight="SemiBold" />
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding UserCount, StringFormat='{}{0} online'}" />
+                                <TextBlock DockPanel.Dock="Right"
+                                           Margin="12,0,0,0"
+                                           Text="{Binding PingText}" />
+                            </DockPanel>
+                        </Button>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+
+        <!-- User list -->
+        <Border Grid.Column="1"
+                Grid.Row="1"
+                Margin="12"
+                Padding="12"
+                BorderBrush="{DynamicResource ThemeBorderMidBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+            <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding Users}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid ColumnDefinitions="*,80,100,60" Margin="0,4">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Border Width="8"
+                                            CornerRadius="4"
+                                            Background="{Binding ActivityBrush}" />
+                                    <TextBlock Text="{Binding Username}" />
+                                </StackPanel>
+                                <ProgressBar Grid.Column="1"
+                                             Minimum="0"
+                                             Maximum="1"
+                                             Value="{Binding Level}" />
+                                <Slider Grid.Column="2"
+                                        Minimum="-24"
+                                        Maximum="12"
+                                        Value="{Binding VolumeDb, Mode=TwoWay}"
+                                        TickFrequency="1"
+                                        IsSnapToTickEnabled="True" />
+                                <ToggleSwitch Grid.Column="3"
+                                              IsChecked="{Binding IsMuted, Mode=TwoWay}"
+                                              Content="Mute" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </Border>
+
+        <!-- Footer -->
+        <Border Grid.ColumnSpan="2"
+                Grid.Row="2"
+                Background="{DynamicResource ThemeBackgroundBrush}"
+                BorderBrush="{DynamicResource ThemeBorderLowBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="12">
+            <TextBlock Text="{Binding FooterStatus}" />
+        </Border>
+    </Grid>
+</Window>

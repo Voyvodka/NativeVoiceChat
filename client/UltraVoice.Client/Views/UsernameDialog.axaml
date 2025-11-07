@@ -1,0 +1,27 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="UltraVoice.Client.Views.UsernameDialog"
+        Width="320"
+        Height="180"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        Title="Kullanıcı Adı">
+    <StackPanel Margin="20" Spacing="12">
+        <TextBlock Text="Lütfen kullanıcı adınızı girin"
+                   TextWrapping="Wrap" />
+        <TextBox x:Name="InputBox"
+                 Watermark="Kullanıcı adı"
+                 MinWidth="260" />
+        <StackPanel Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Spacing="8">
+            <Button Content="İptal"
+                    Width="80"
+                    Click="OnCancel" />
+            <Button Content="Kaydet"
+                    Width="80"
+                    IsDefault="True"
+                    Click="OnSave" />
+        </StackPanel>
+    </StackPanel>
+</Window>
