@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Runtime.InteropServices;
 using Concentus.Enums;
 using Concentus.Structs;
 using NAudio.Wave;
@@ -10,6 +12,8 @@ using UltraVoice.Shared.Configuration;
 using UltraVoice.Shared.Audio;
 
 namespace UltraVoice.Client.Services;
+
+#pragma warning disable CS0618 // Concentus legacy API usage until span-based migration
 
 /// <summary>
 /// Handles capture, encode and playback for the UltraVoice client.
@@ -25,8 +29,8 @@ public sealed class AudioEngine : IDisposable, IAudioSink
 
     private readonly AppState _state;
     private readonly ClientTransport _transport;
-    private readonly WaveInEvent _waveIn;
-    private readonly WaveOutEvent _waveOut;
+    private WaveInEvent _waveIn;
+    private WaveOutEvent _waveOut;
     private readonly MixingSampleProvider _mixer;
     private readonly ConcurrentDictionary<uint, RemoteStream> _remoteStreams = new();
     private readonly HashSet<uint> _activeSpeakers = new();
@@ -39,27 +43,22 @@ public sealed class AudioEngine : IDisposable, IAudioSink
     private bool _isStarted;
     private double _inputGainDb;
     private ushort _sequence;
-    private IDisposable? _activeSpeakerSubscription;
+    private readonly IDisposable? _activeSpeakerSubscription;
 
     public AudioEngine(AppState state, ClientTransport transport)
     {
         _state = state;
         _transport = transport;
 
-        _waveIn = new WaveInEvent
-        {
-            WaveFormat = new WaveFormat(SampleRate, 16, Channels),
-            BufferMilliseconds = FrameDurationMs
-        };
-        _waveIn.DataAvailable += OnCaptureData;
+        var initialInput = NormalizeDeviceIndex(state.Configuration.InputDeviceId, WaveInEvent.DeviceCount);
+        _waveIn = CreateWaveIn(initialInput);
 
-        _waveOut = new WaveOutEvent();
         _mixer = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels))
         {
             ReadFully = true
         };
-        _waveOut.Init(_mixer);
-        _waveOut.Play();
+        var initialOutput = NormalizeDeviceIndex(state.Configuration.OutputDeviceId, GetWaveOutDeviceCount());
+        _waveOut = CreateWaveOut(initialOutput);
 
         _encoder = new OpusEncoder(SampleRate, Channels, OpusApplication.OPUS_APPLICATION_VOIP);
         _encoder.Bitrate = 24000;
@@ -71,22 +70,90 @@ public sealed class AudioEngine : IDisposable, IAudioSink
         _transport.RegisterAudioSink(this);
     }
 
-    public IReadOnlyList<string> GetInputDevices() =>
-        new[] { "Varsayılan Giriş" };
+    public IReadOnlyList<AudioDeviceOption> GetInputDevices()
+    {
+        var devices = new List<AudioDeviceOption>();
+        for (var i = 0; i < WaveInEvent.DeviceCount; i++)
+        {
+            var caps = WaveInEvent.GetCapabilities(i);
+            devices.Add(new AudioDeviceOption(i.ToString(CultureInfo.InvariantCulture), caps.ProductName));
+        }
 
-    public IReadOnlyList<string> GetOutputDevices() =>
-        new[] { "Varsayılan Çıkış" };
+        if (devices.Count == 0)
+        {
+            devices.Add(new AudioDeviceOption("0", "Default Input"));
+        }
+
+        return devices;
+    }
+
+    public IReadOnlyList<AudioDeviceOption> GetOutputDevices()
+    {
+        var devices = new List<AudioDeviceOption>();
+        var count = GetWaveOutDeviceCount();
+        for (var i = 0; i < count; i++)
+        {
+            var name = GetWaveOutProductName(i) ?? $"Output {i}";
+            devices.Add(new AudioDeviceOption(i.ToString(CultureInfo.InvariantCulture), name));
+        }
+
+        if (devices.Count == 0)
+        {
+            devices.Add(new AudioDeviceOption("0", "Default Output"));
+        }
+
+        return devices;
+    }
 
     public void SelectInputDevice(string? deviceId)
     {
-        _waveIn.DeviceNumber = 0;
-    }
+        if (WaveInEvent.DeviceCount == 0)
+        {
+            return;
+        }
 
+        var index = NormalizeDeviceIndex(deviceId, WaveInEvent.DeviceCount);
+        if (_waveIn.DeviceNumber == index)
+        {
+            return;
+        }
+
+        var wasCapturing = _isStarted;
+        if (wasCapturing)
+        {
+            StopCapture();
+        }
+
+        _waveIn.DataAvailable -= OnCaptureData;
+        _waveIn.Dispose();
+        _waveIn = CreateWaveIn(index);
+
+        if (wasCapturing)
+        {
+            StartCapture();
+        }
+    }
     public void SelectOutputDevice(string? deviceId)
     {
-        _waveOut.DeviceNumber = 0;
-    }
+        var count = GetWaveOutDeviceCount();
+        if (count == 0)
+        {
+            return;
+        }
 
+        var index = NormalizeDeviceIndex(deviceId, count);
+        if (_waveOut.DeviceNumber == index)
+        {
+            return;
+        }
+
+        lock (_playbackGate)
+        {
+            _waveOut.Stop();
+            _waveOut.Dispose();
+            _waveOut = CreateWaveOut(index);
+        }
+    }
     public void SetInputGain(double inputGainDb)
     {
         _inputGainDb = inputGainDb;
@@ -188,6 +255,7 @@ public sealed class AudioEngine : IDisposable, IAudioSink
     {
         StopCapture();
         _activeSpeakerSubscription?.Dispose();
+        _waveIn.DataAvailable -= OnCaptureData;
         foreach (var stream in _remoteStreams.Values)
         {
             stream.Dispose();
@@ -195,6 +263,100 @@ public sealed class AudioEngine : IDisposable, IAudioSink
         _remoteStreams.Clear();
         _waveIn.Dispose();
         _waveOut.Dispose();
+    }
+
+    private WaveInEvent CreateWaveIn(int deviceNumber)
+    {
+        var waveIn = new WaveInEvent
+        {
+            DeviceNumber = ClampDeviceNumber(deviceNumber, WaveInEvent.DeviceCount),
+            WaveFormat = new WaveFormat(SampleRate, 16, Channels),
+            BufferMilliseconds = FrameDurationMs
+        };
+        waveIn.DataAvailable += OnCaptureData;
+        return waveIn;
+    }
+
+    private WaveOutEvent CreateWaveOut(int deviceNumber)
+    {
+        var waveOut = new WaveOutEvent
+        {
+            DeviceNumber = ClampDeviceNumber(deviceNumber, GetWaveOutDeviceCount())
+        };
+        waveOut.Init(_mixer);
+        waveOut.Play();
+        return waveOut;
+    }
+
+    private static int NormalizeDeviceIndex(string? deviceId, int deviceCount)
+    {
+        if (deviceCount <= 0)
+        {
+            return 0;
+        }
+
+        if (int.TryParse(deviceId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return ClampDeviceNumber(parsed, deviceCount);
+        }
+
+        return 0;
+    }
+
+    private static int ClampDeviceNumber(int deviceNumber, int deviceCount)
+    {
+        if (deviceCount <= 0)
+        {
+            return 0;
+        }
+
+        if (deviceNumber < 0)
+        {
+            return 0;
+        }
+
+        if (deviceNumber >= deviceCount)
+        {
+            return deviceCount - 1;
+        }
+
+        return deviceNumber;
+    }
+
+    private static string? GetWaveOutProductName(int deviceNumber)
+    {
+        var size = (uint)Marshal.SizeOf<WaveOutCaps>();
+        if (waveOutGetDevCaps(new UIntPtr((uint)deviceNumber), out var caps, size) == 0)
+        {
+            return string.IsNullOrWhiteSpace(caps.ProductName) ? null : caps.ProductName;
+        }
+
+        return null;
+    }
+
+    private static int GetWaveOutDeviceCount()
+        => (int)waveOutGetNumDevs();
+
+    [DllImport("winmm.dll")]
+    private static extern uint waveOutGetNumDevs();
+
+    [DllImport("winmm.dll", CharSet = CharSet.Auto)]
+    private static extern int waveOutGetDevCaps(UIntPtr hwo, out WaveOutCaps caps, uint cbCaps);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct WaveOutCaps
+    {
+        public ushort ManufacturerId;
+        public ushort ProductId;
+        public uint DriverVersion;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string ProductName;
+
+        public uint Formats;
+        public ushort Channels;
+        public ushort Reserved;
+        public uint Support;
     }
 
     private void UpdateActiveSpeakers(IReadOnlyCollection<uint> speakers)
@@ -298,3 +460,11 @@ public sealed class AudioEngine : IDisposable, IAudioSink
         }
     }
 }
+
+public sealed record AudioDeviceOption(string Id, string DisplayName)
+{
+    public override string ToString() => DisplayName;
+}
+
+#pragma warning restore CS0618
+

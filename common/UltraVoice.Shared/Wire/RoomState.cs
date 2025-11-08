@@ -16,7 +16,7 @@ public sealed class RoomState
 }
 
 /// <summary>
-// / Lightweight description for users listed in presence updates.
+/// Lightweight description for users listed in presence updates.
 /// </summary>
 [MessagePackObject]
 public sealed class UserSummary
@@ -29,4 +29,10 @@ public sealed class UserSummary
 
     [Key(2)]
     public ulong JoinedAtUnixMs { get; init; }
+
+    [Key(3)]
+    public bool IsMuted { get; init; }
+
+    [Key(4)]
+    public double VolumeDb { get; init; }
 }

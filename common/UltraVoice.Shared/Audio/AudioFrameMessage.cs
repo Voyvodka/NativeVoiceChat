@@ -30,5 +30,5 @@ public sealed class AudioFrameMessage
     /// Encoded Opus payload.
     /// </summary>
     [Key(3)]
-    public byte[] Payload { get; init; } = Array.Empty<byte>();
+    public byte[] Payload { get; init; } = [];
 }

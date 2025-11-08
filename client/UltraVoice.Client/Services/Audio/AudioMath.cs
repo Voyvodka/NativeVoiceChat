@@ -1,5 +1,3 @@
-using System;
-
 namespace UltraVoice.Client.Services.Audio;
 
 internal static class AudioMath

@@ -1,29 +1,30 @@
-using System;
-using System.Collections.ObjectModel;
-using System.Linq;
+﻿using System.Collections.ObjectModel;
 using System.Reactive;
+using System.Reactive.Disposables;
 using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using CommunityToolkit.Mvvm.ComponentModel;
-using System.Threading.Tasks;
-using CommunityToolkit.Mvvm.Input;
-using Avalonia.Media;
 using ReactiveUI;
 using UltraVoice.Client.Services;
 
 namespace UltraVoice.Client.ViewModels;
 
-public partial class MainWindowViewModel : ObservableObject
+public partial class MainWindowViewModel : ObservableObject, IDisposable
 {
     private readonly AppState _state;
     private readonly ClientTransport _transport;
     private readonly AudioEngine _audio;
     private readonly ConfigStore _configStore;
+    private readonly Dictionary<uint, UserViewModel> _userCache = new();
+    private readonly Subject<(UserViewModel vm, UserChangeKind kind)> _userChanges = new();
+    private readonly CompositeDisposable _cleanup = new();
+    private static readonly TimeSpan VolumeDebounceInterval = TimeSpan.FromMilliseconds(200);
 
     [ObservableProperty]
-    private ObservableCollection<RoomViewModel> rooms = new();
+    private ObservableCollection<RoomViewModel> rooms = [];
 
     [ObservableProperty]
-    private ObservableCollection<UserViewModel> users = new();
+    private ObservableCollection<UserViewModel> users = [];
 
     [ObservableProperty]
     private string connectionStatus = "Disconnected";
@@ -35,16 +36,16 @@ public partial class MainWindowViewModel : ObservableObject
     private string footerStatus = string.Empty;
 
     [ObservableProperty]
-    private IReadOnlyList<string> inputDevices = Array.Empty<string>();
+    private IReadOnlyList<AudioDeviceOption> inputDevices = [];
 
     [ObservableProperty]
-    private IReadOnlyList<string> outputDevices = Array.Empty<string>();
+    private IReadOnlyList<AudioDeviceOption> outputDevices = [];
 
     [ObservableProperty]
-    private string? selectedInputDevice;
+    private AudioDeviceOption? selectedInputDevice;
 
     [ObservableProperty]
-    private string? selectedOutputDevice;
+    private AudioDeviceOption? selectedOutputDevice;
 
     [ObservableProperty]
     private double inputGainDb;
@@ -67,8 +68,25 @@ public partial class MainWindowViewModel : ObservableObject
         JoinRoomCommand = ReactiveCommand.CreateFromTask<string>(JoinRoomAsync);
 
         inputGainDb = _state.Configuration.InputGainDb;
-        selectedInputDevice = _state.Configuration.InputDeviceId;
-        selectedOutputDevice = _state.Configuration.OutputDeviceId;
+
+        var muteSubscription = _userChanges
+            .Where(change => change.kind == UserChangeKind.Mute)
+            .ObserveOn(RxApp.MainThreadScheduler)
+            .Subscribe(change => SendUserChange(change.vm));
+        _cleanup.Add(muteSubscription);
+
+        var volumeSubscription = _userChanges
+            .Where(change => change.kind == UserChangeKind.Volume)
+            .GroupBy(change => change.vm.SessionId)
+            .Subscribe(group =>
+            {
+                var throttled = group
+                    .Throttle(VolumeDebounceInterval)
+                    .ObserveOn(RxApp.MainThreadScheduler)
+                    .Subscribe(change => SendUserChange(change.vm));
+                _cleanup.Add(throttled);
+            });
+        _cleanup.Add(volumeSubscription);
 
         _state.Rooms
             .ObserveOn(RxApp.MainThreadScheduler)
@@ -89,17 +107,13 @@ public partial class MainWindowViewModel : ObservableObject
         InputDevices = _audio.GetInputDevices();
         OutputDevices = _audio.GetOutputDevices();
 
-        if (InputDevices.Count > 0 && string.IsNullOrWhiteSpace(SelectedInputDevice))
-        {
-            SelectedInputDevice = InputDevices[0];
-        }
+        SelectedInputDevice = FindDevice(InputDevices, _state.Configuration.InputDeviceId)
+            ?? InputDevices.FirstOrDefault();
 
-        if (OutputDevices.Count > 0 && string.IsNullOrWhiteSpace(SelectedOutputDevice))
-        {
-            SelectedOutputDevice = OutputDevices[0];
-        }
+        SelectedOutputDevice = FindDevice(OutputDevices, _state.Configuration.OutputDeviceId)
+            ?? OutputDevices.FirstOrDefault();
 
-        FooterStatus = $"Ready – target server {_state.Configuration.Server.Host}:{_state.Configuration.Server.Port}";
+        FooterStatus = $"Ready — target server {_state.Configuration.Server.Host}:{_state.Configuration.Server.Port}";
     }
 
     public async Task SetUsernameAsync(string username)
@@ -109,8 +123,8 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        _state.Configuration.Username = username.Trim();
-        await _configStore.SaveAsync(_state.Configuration);
+        _state.Configuration.Username = _state.NormalizeUsername(username);
+        await ConfigStore.SaveAsync(_state.Configuration);
         OnPropertyChanged(nameof(Username));
     }
 
@@ -123,7 +137,7 @@ public partial class MainWindowViewModel : ObservableObject
 
         if (string.IsNullOrWhiteSpace(_state.Configuration.Username))
         {
-            FooterStatus = "Lütfen önce kullanıcı adınızı girin.";
+            FooterStatus = "LÃ¼tfen Ã¶nce kullanÄ±cÄ± adÄ±nÄ±zÄ± girin.";
             return;
         }
 
@@ -133,35 +147,37 @@ public partial class MainWindowViewModel : ObservableObject
         {
             await _transport.JoinRoomAsync(roomId);
             _state.SetCurrentRoom(roomId);
-            _ = _configStore.SaveAsync(_state.Configuration);
+            _ = ConfigStore.SaveAsync(_state.Configuration);
             _audio.StartCapture();
             FooterStatus = $"Joined {roomId}";
         }
         catch (Exception ex)
         {
-            FooterStatus = $"Bağlantı hatası: {ex.Message}";
+            FooterStatus = $"BaÄŸlantÄ± hatasÄ±: {ex.Message}";
         }
     }
 
-    partial void OnSelectedInputDeviceChanged(string? value)
+    partial void OnSelectedInputDeviceChanged(AudioDeviceOption? value)
     {
-        _audio.SelectInputDevice(value);
-        _state.Configuration.InputDeviceId = value;
-        _ = _configStore.SaveAsync(_state.Configuration);
+        var id = value?.Id;
+        _audio.SelectInputDevice(id);
+        _state.Configuration.InputDeviceId = id;
+        _ = ConfigStore.SaveAsync(_state.Configuration);
     }
 
-    partial void OnSelectedOutputDeviceChanged(string? value)
+    partial void OnSelectedOutputDeviceChanged(AudioDeviceOption? value)
     {
-        _audio.SelectOutputDevice(value);
-        _state.Configuration.OutputDeviceId = value;
-        _ = _configStore.SaveAsync(_state.Configuration);
+        var id = value?.Id;
+        _audio.SelectOutputDevice(id);
+        _state.Configuration.OutputDeviceId = id;
+        _ = ConfigStore.SaveAsync(_state.Configuration);
     }
 
     partial void OnInputGainDbChanged(double value)
     {
         _audio.SetInputGain(value);
         _state.Configuration.InputGainDb = value;
-        _ = _configStore.SaveAsync(_state.Configuration);
+        _ = ConfigStore.SaveAsync(_state.Configuration);
     }
 
     private void UpdateRooms(IReadOnlyCollection<RoomSnapshot> snapshot)
@@ -175,48 +191,78 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void UpdateUsers(IReadOnlyCollection<UserSnapshot> snapshot)
     {
-        Users = new ObservableCollection<UserViewModel>(
-            snapshot.Select(user => new UserViewModel(user)));
+        Users ??= new ObservableCollection<UserViewModel>();
+
+        var desiredOrder = new List<UserViewModel>(snapshot.Count);
+
+        foreach (var user in snapshot)
+        {
+            if (!_userCache.TryGetValue(user.SessionId, out var viewModel))
+            {
+                viewModel = new UserViewModel(user, OnUserChanged);
+                _userCache[user.SessionId] = viewModel;
+                Users.Add(viewModel);
+            }
+            else
+            {
+                viewModel.ApplySnapshot(user);
+            }
+
+            desiredOrder.Add(viewModel);
+        }
+
+        for (var index = 0; index < desiredOrder.Count; index++)
+        {
+            var viewModel = desiredOrder[index];
+            var currentIndex = Users.IndexOf(viewModel);
+
+            if (currentIndex == index)
+            {
+                continue;
+            }
+
+            if (currentIndex >= 0)
+            {
+                Users.Move(currentIndex, index);
+            }
+            else
+            {
+                Users.Insert(index, viewModel);
+            }
+        }
+
+        while (Users.Count > desiredOrder.Count)
+        {
+            var lastIndex = Users.Count - 1;
+            var viewModel = Users[lastIndex];
+            Users.RemoveAt(lastIndex);
+            _userCache.Remove(viewModel.SessionId);
+        }
     }
-}
 
-public sealed class RoomViewModel
-{
-    public string RoomId { get; }
-    public int UserCount { get; }
-    public string PingText { get; }
-
-    public RoomViewModel(string roomId, int userCount, string pingText)
+    private static AudioDeviceOption? FindDevice(IReadOnlyList<AudioDeviceOption> devices, string? id)
     {
-        RoomId = roomId;
-        UserCount = userCount;
-        PingText = pingText;
-    }
-}
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
 
-public sealed partial class UserViewModel : ObservableObject
-{
-    public UserViewModel(UserSnapshot snapshot)
+        return devices.FirstOrDefault(device => string.Equals(device.Id, id, StringComparison.Ordinal));
+    }
+
+    private void OnUserChanged(UserViewModel vm, UserChangeKind kind) =>
+        _userChanges.OnNext((vm, kind));
+
+    private void SendUserChange(UserViewModel vm)
     {
-        Username = snapshot.Username;
-        IsMuted = snapshot.IsMuted;
-        VolumeDb = snapshot.VolumeDb;
-        Level = snapshot.Level;
-        ActivityBrush = snapshot.ActivityBrush;
+        System.Diagnostics.Debug.WriteLine($"[UserChanged] Sending mute={vm.IsMuted} volume={vm.VolumeDb:F1} for {vm.Username}");
+        _transport.SendUserEvent(vm.IsMuted, vm.VolumeDb);
     }
 
-    [ObservableProperty]
-    private string username;
-
-    [ObservableProperty]
-    private bool isMuted;
-
-    [ObservableProperty]
-    private double volumeDb;
-
-    [ObservableProperty]
-    private double level;
-
-    [ObservableProperty]
-    private IBrush activityBrush;
+    public void Dispose()
+    {
+        _cleanup.Dispose();
+        _userChanges.Dispose();
+    }
 }
+

@@ -1,9 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Threading;
-using System.Threading.Tasks;
 using LiteNetLib;
-using LiteNetLib.Utils;
 using MessagePack;
 using UltraVoice.Shared.Audio;
 using UltraVoice.Shared.Configuration;
@@ -21,6 +18,8 @@ public sealed class ClientTransport : INetEventListener, IDisposable
     private CancellationTokenSource? _cts;
     private Task? _pumpTask;
     private uint _sessionId;
+    private uint _lastPingSentMs;
+    private double _lastRttMs;
 
     public ClientTransport(AppState state, ClientConfig config)
     {
@@ -46,10 +45,11 @@ public sealed class ClientTransport : INetEventListener, IDisposable
             throw new InvalidOperationException("Failed to start client NetManager");
         }
 
-        _cts = new CancellationTokenSource();
+        using var _ = _cts = new CancellationTokenSource();
         _pumpTask = Task.Run(() => PumpAsync(_cts.Token), CancellationToken.None);
 
         _state.SetConnectionStatus("Connecting...");
+        UpdateTelemetry(null);
         _serverPeer = _netManager.Connect(_config.Server.Host, _config.Server.Port, string.Empty);
 
         return Task.CompletedTask;
@@ -96,6 +96,7 @@ public sealed class ClientTransport : INetEventListener, IDisposable
     void INetEventListener.OnNetworkError(IPEndPoint endPoint, SocketError socketError)
     {
         _state.SetConnectionStatus($"Error: {socketError}");
+        UpdateTelemetry(null);
     }
 
     void INetEventListener.OnNetworkLatencyUpdate(NetPeer peer, int latency)
@@ -111,9 +112,10 @@ public sealed class ClientTransport : INetEventListener, IDisposable
     void INetEventListener.OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
     {
         _state.SetConnectionStatus($"Disconnected: {disconnectInfo.Reason}");
+        UpdateTelemetry(null);
     }
 
-    void INetEventListener.OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod deliveryMethod)
+    void INetEventListener.OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod deliveryMethod)
     {
         try
         {
@@ -152,11 +154,48 @@ public sealed class ClientTransport : INetEventListener, IDisposable
                 var frame = MessagePackSerializer.Deserialize<AudioFrameMessage>(envelope.Payload);
                 _audioSink?.HandleAudio(envelope.SessionId, frame);
                 break;
+            case MessageType.Ping:
+                HandlePing(envelope.Payload);
+                break;
             case MessageType.Pong:
+                HandlePong(envelope.Payload);
                 break;
             default:
                 break;
         }
+    }
+
+    private void HandlePing(byte[] payload)
+    {
+        if (_serverPeer is null || _sessionId == 0)
+        {
+            return;
+        }
+
+        var envelope = new MessageEnvelope
+        {
+            Type = MessageType.Pong,
+            SessionId = _sessionId,
+            Sequence = 0,
+            TimestampMs = CurrentTimestamp(),
+            Payload = payload
+        };
+
+        _serverPeer.Send(MessagePackSerializer.Serialize(envelope), DeliveryMethod.ReliableOrdered);
+    }
+
+    private void HandlePong(byte[] payload)
+    {
+        if (payload is null || payload.Length < 4)
+        {
+            return;
+        }
+
+        var sentTs = BitConverter.ToUInt32(payload, 0);
+        var now = CurrentTimestamp();
+        var rtt = (uint)(now - sentTs); // handles wrap naturally for uint
+        _lastRttMs = rtt;
+        UpdateTelemetry(rtt);
     }
 
     public void SendAudioFrame(AudioFrameMessage frame)
@@ -183,13 +222,66 @@ public sealed class ClientTransport : INetEventListener, IDisposable
         _audioSink = sink;
     }
 
+    public void SendUserEvent(bool? mute, double? volumeDb)
+    {
+        if (_serverPeer is null || _sessionId == 0)
+        {
+            return;
+        }
+
+        var evt = new UserEventMessage
+        {
+            Mute = mute,
+            VolumeDb = volumeDb
+        };
+
+        var envelope = new MessageEnvelope
+        {
+            Type = MessageType.UserEvent,
+            SessionId = _sessionId,
+            Sequence = 0,
+            TimestampMs = CurrentTimestamp(),
+            Payload = MessagePackSerializer.Serialize(evt)
+        };
+
+        _serverPeer.Send(MessagePackSerializer.Serialize(envelope), DeliveryMethod.ReliableOrdered);
+    }
+
     private async Task PumpAsync(CancellationToken token)
     {
         while (!token.IsCancellationRequested)
         {
             _netManager.PollEvents();
+            TrySendPing();
             await Task.Delay(10, token).ConfigureAwait(false);
         }
+    }
+
+    private void TrySendPing()
+    {
+        if (_serverPeer is null || _sessionId == 0)
+        {
+            return;
+        }
+
+        var now = CurrentTimestamp();
+        if (now - _lastPingSentMs < 1000)
+        {
+            return;
+        }
+
+        _lastPingSentMs = now;
+        var payload = BitConverter.GetBytes(now);
+        var envelope = new MessageEnvelope
+        {
+            Type = MessageType.Ping,
+            SessionId = _sessionId,
+            Sequence = 0,
+            TimestampMs = now,
+            Payload = payload
+        };
+
+        _serverPeer.Send(MessagePackSerializer.Serialize(envelope), DeliveryMethod.ReliableOrdered);
     }
 
     public void Dispose()
@@ -200,6 +292,15 @@ public sealed class ClientTransport : INetEventListener, IDisposable
     }
 
     private static uint CurrentTimestamp() => (uint)Environment.TickCount64;
+
+    private void UpdateTelemetry(uint? rttMs)
+    {
+        var host = _config.Server.Host;
+        var port = _config.Server.Port;
+        var baseText = $"Server {host}:{port}";
+        var text = rttMs.HasValue ? $"{baseText} • RTT {rttMs.Value} ms" : baseText;
+        _state.SetTelemetry(text);
+    }
 }
 
 public interface IAudioSink

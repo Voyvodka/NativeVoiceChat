@@ -46,6 +46,7 @@ public sealed class AppState
     public AppState(ClientConfig config)
     {
         Configuration = config;
+        Configuration.Username = NormalizeUsername(Configuration.Username);
         var fallbackRoom = string.IsNullOrWhiteSpace(config.LastRoom) ? "room-a" : config.LastRoom;
         _currentRoom = new BehaviorSubject<string>(fallbackRoom);
     }
@@ -128,8 +129,8 @@ public sealed class AppState
             .Select(u => new UserSnapshot(
                 u.SessionId,
                 u.Username,
-                IsMuted: false,
-                VolumeDb: 0,
+                IsMuted: u.IsMuted,
+                VolumeDb: u.VolumeDb,
                 Level: GetLevel(u.SessionId),
                 ActivityBrush: GetActivityBrush(u.SessionId)))
             .ToArray();
@@ -149,6 +150,31 @@ public sealed class AppState
     {
         var isActive = _activeSpeakersCurrent.Contains(sessionId);
         return isActive ? Brushes.LimeGreen : Brushes.Gray;
+    }
+
+    public string NormalizeUsername(string? raw)
+    {
+        var input = raw?.Trim() ?? string.Empty;
+        var machine = Environment.MachineName;
+
+        if (string.IsNullOrWhiteSpace(machine))
+        {
+            return input;
+        }
+
+        var suffix = $"@{machine}";
+
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return suffix.TrimStart('@');
+        }
+
+        if (input.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return input;
+        }
+
+        return $"{input}{suffix}";
     }
 }
 

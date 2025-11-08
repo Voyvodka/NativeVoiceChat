@@ -1,0 +1,27 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="UltraVoice.Client.Views.ServerSettingsDialog"
+        CanResize="False"
+        Width="360"
+        Height="220"
+        Title="Server Settings"
+        WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="Auto,Auto,Auto,Auto" Margin="16" VerticalAlignment="Center">
+    <Grid RowDefinitions="Auto" ColumnDefinitions="Auto,*" Margin="0,0,0,12">
+      <TextBlock Text="Host" VerticalAlignment="Center" Margin="0,0,8,0" />
+      <TextBox x:Name="HostBox" Grid.Column="1" MinWidth="200" />
+    </Grid>
+    <Grid RowDefinitions="Auto" ColumnDefinitions="Auto,*" Margin="0,0,0,12">
+      <TextBlock Text="Port" VerticalAlignment="Center" Margin="0,0,8,0" />
+      <TextBox x:Name="PortBox" Grid.Column="1" />
+    </Grid>
+    <Grid RowDefinitions="Auto" ColumnDefinitions="Auto,*" Margin="0,0,0,16">
+      <TextBlock Text="Token" VerticalAlignment="Center" Margin="0,0,8,0" />
+      <TextBox x:Name="TokenBox" Grid.Column="1" />
+    </Grid>
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Width="90" Content="Cancel" Click="OnCancel" />
+      <Button Width="90" Content="Save" IsDefault="True" Click="OnSave" />
+    </StackPanel>
+  </Grid>
+</Window>

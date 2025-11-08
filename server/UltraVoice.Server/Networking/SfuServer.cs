@@ -1,8 +1,6 @@
-using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using LiteNetLib;
-using LiteNetLib.Utils;
 using MessagePack;
 using Microsoft.Extensions.Logging;
 using UltraVoice.Shared.Audio;
@@ -24,10 +22,16 @@ public sealed class SfuServer : INetEventListener, IDisposable
     private readonly Dictionary<string, HashSet<NetPeer>> _rooms;
     private readonly object _gate = new();
 
+    private static readonly TimeSpan KeepAliveInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan TimeoutInterval = TimeSpan.FromSeconds(15);
+    private const int ControlRateLimitPerSecond = 10;
+    private const int AudioRateLimitPerSecond = 80;
+
     private uint _nextSessionId = RandomSessionId();
     private CancellationTokenSource? _cts;
     private Task? _pumpTask;
     private uint[] _activeSpeakers = Array.Empty<uint>();
+    private DateTimeOffset _lastMaintenance = DateTimeOffset.MinValue;
 
     public SfuServer(ServerConfig config, ILogger<SfuServer> logger)
     {
@@ -135,7 +139,7 @@ public sealed class SfuServer : INetEventListener, IDisposable
 
     void INetEventListener.OnPeerConnected(NetPeer peer)
     {
-        _logger.LogInformation("Peer {Address} connected", peer.EndPoint);
+        _logger.LogInformation("Peer {Address} connected", peer);
     }
 
     void INetEventListener.OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
@@ -154,10 +158,10 @@ public sealed class SfuServer : INetEventListener, IDisposable
             }
         }
 
-        _logger.LogInformation("Peer {Address} disconnected ({Reason})", peer.EndPoint, disconnectInfo.Reason);
+        _logger.LogInformation("Peer {Address} disconnected ({Reason})", peer, disconnectInfo.Reason);
     }
 
-    void INetEventListener.OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod deliveryMethod)
+    void INetEventListener.OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod deliveryMethod)
     {
         try
         {
@@ -166,7 +170,7 @@ public sealed class SfuServer : INetEventListener, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to deserialize control payload from {Peer}", peer.EndPoint);
+            _logger.LogWarning(ex, "Failed to deserialize control payload from {Peer}", peer);
         }
         finally
         {
@@ -212,21 +216,21 @@ public sealed class SfuServer : INetEventListener, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Invalid HELLO payload from {Peer}", peer.EndPoint);
+            _logger.LogWarning(ex, "Invalid HELLO payload from {Peer}", peer);
             peer.Disconnect();
             return;
         }
 
         if (_config.SharedToken is { Length: > 0 } token && !string.Equals(token, hello.Token, StringComparison.Ordinal))
         {
-            _logger.LogInformation("Peer {Peer} rejected due to token mismatch", peer.EndPoint);
+            _logger.LogInformation("Peer {Peer} rejected due to token mismatch", peer);
             peer.Disconnect();
             return;
         }
 
         if (!_rooms.ContainsKey(hello.RoomId))
         {
-            _logger.LogInformation("Peer {Peer} requested unknown room {Room}, defaulting to room-a", peer.EndPoint, hello.RoomId);
+            _logger.LogInformation("Peer {Peer} requested unknown room {Room}, defaulting to room-a", peer, hello.RoomId);
             hello = new HelloMessage
             {
                 Username = hello.Username,
@@ -253,7 +257,7 @@ public sealed class SfuServer : INetEventListener, IDisposable
 
             if (joiningNewRoom && peers.Count >= _config.MaxUsersPerRoom)
             {
-                _logger.LogInformation("Room {Room} full, rejecting {Peer}", hello.RoomId, peer.EndPoint);
+                _logger.LogInformation("Room {Room} full, rejecting {Peer}", hello.RoomId, peer);
                 if (!string.IsNullOrEmpty(previousRoom) && _rooms.TryGetValue(previousRoom, out var previousPeers))
                 {
                     previousPeers.Add(peer);
@@ -263,6 +267,7 @@ public sealed class SfuServer : INetEventListener, IDisposable
             }
 
             Session session;
+            var now = DateTimeOffset.UtcNow;
             if (!_sessions.TryGetValue(peer, out var retrieved) || retrieved is null)
             {
                 session = new Session
@@ -270,7 +275,14 @@ public sealed class SfuServer : INetEventListener, IDisposable
                     SessionId = NextSessionId(),
                     Username = hello.Username,
                     RoomId = hello.RoomId,
-                    ConnectedAt = DateTimeOffset.UtcNow
+                    ConnectedAt = now,
+                    LastControlAt = now,
+                    LastActivityAt = now,
+                    ControlWindowStart = now,
+                    ControlMessagesThisWindow = 0,
+                    AudioWindowStart = now,
+                    AudioMessagesThisWindow = 0,
+                    LastAudioAt = now
                 };
                 _sessions[peer] = session;
             }
@@ -284,6 +296,13 @@ public sealed class SfuServer : INetEventListener, IDisposable
 
                 session.Username = hello.Username;
                 session.RoomId = hello.RoomId;
+                session.LastControlAt = now;
+                session.LastActivityAt = now;
+                session.ControlWindowStart = now;
+                session.ControlMessagesThisWindow = 0;
+                session.AudioWindowStart = now;
+                session.AudioMessagesThisWindow = 0;
+                session.LastAudioAt = now;
             }
 
             peers.Add(peer);
@@ -317,7 +336,7 @@ public sealed class SfuServer : INetEventListener, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Invalid AUDIO_FRAME payload from {Peer}", sender.EndPoint);
+            _logger.LogWarning(ex, "Invalid AUDIO_FRAME payload from {Peer}", sender);
             return;
         }
 
@@ -332,8 +351,13 @@ public sealed class SfuServer : INetEventListener, IDisposable
                 return;
             }
 
+            if (!TryAllowAudio(session))
+            {
+                LogRateLimit(sender, "audio");
+                return;
+            }
+
             session.LastRms = frame.Rms;
-            session.LastAudioAt = DateTimeOffset.UtcNow;
 
             var forwardedEnvelope = new MessageEnvelope
             {
@@ -372,7 +396,18 @@ public sealed class SfuServer : INetEventListener, IDisposable
 
     private void RespondPing(NetPeer peer, MessageEnvelope envelope)
     {
-        SendEnvelope(peer, MessageType.Pong, envelope.SessionId, envelope.Payload);
+        if (!TryGetSession(peer, out var session) || session is null)
+        {
+            return;
+        }
+
+        if (!TryAllowControl(session))
+        {
+            LogRateLimit(peer, "control");
+            return;
+        }
+
+        SendEnvelope(peer, MessageType.Pong, session.SessionId, envelope.Payload);
     }
 
     private void UpdateUserEvent(NetPeer peer, byte[] payload)
@@ -382,15 +417,22 @@ public sealed class SfuServer : INetEventListener, IDisposable
             return;
         }
 
+        if (!TryAllowControl(session))
+        {
+            LogRateLimit(peer, "control");
+            return;
+        }
+
         try
         {
             var evt = MessagePackSerializer.Deserialize<UserEventMessage>(payload);
             session.IsMuted = evt.Mute ?? session.IsMuted;
             session.VolumeDb = evt.VolumeDb ?? session.VolumeDb;
+            BroadcastState(session.RoomId);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to parse USER_EVENT from {Peer}", peer.EndPoint);
+            _logger.LogWarning(ex, "Failed to parse USER_EVENT from {Peer}", peer);
         }
     }
 
@@ -456,7 +498,9 @@ public sealed class SfuServer : INetEventListener, IDisposable
                     {
                         SessionId = session!.SessionId,
                         Username = session.Username,
-                        JoinedAtUnixMs = (ulong)session.ConnectedAt.ToUnixTimeMilliseconds()
+                        JoinedAtUnixMs = (ulong)session.ConnectedAt.ToUnixTimeMilliseconds(),
+                        IsMuted = session.IsMuted,
+                        VolumeDb = session.VolumeDb
                     })
                     .ToArray();
 
@@ -494,7 +538,58 @@ public sealed class SfuServer : INetEventListener, IDisposable
         return true;
     }
 
-    private void SendEnvelope(NetPeer peer, MessageType type, uint sessionId, byte[] payload)
+    private bool TryGetSession(NetPeer peer, out Session? session)
+    {
+        lock (_gate)
+        {
+            return _sessions.TryGetValue(peer, out session);
+        }
+    }
+
+    private static bool TryAllowControl(Session session)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (session.ControlWindowStart == DateTimeOffset.MinValue || now - session.ControlWindowStart >= TimeSpan.FromSeconds(1))
+        {
+            session.ControlWindowStart = now;
+            session.ControlMessagesThisWindow = 0;
+        }
+
+        if (session.ControlMessagesThisWindow >= ControlRateLimitPerSecond)
+        {
+            return false;
+        }
+
+        session.ControlMessagesThisWindow++;
+        session.LastControlAt = now;
+        session.LastActivityAt = now;
+        return true;
+    }
+
+    private static bool TryAllowAudio(Session session)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (session.AudioWindowStart == DateTimeOffset.MinValue || now - session.AudioWindowStart >= TimeSpan.FromSeconds(1))
+        {
+            session.AudioWindowStart = now;
+            session.AudioMessagesThisWindow = 0;
+        }
+
+        if (session.AudioMessagesThisWindow >= AudioRateLimitPerSecond)
+        {
+            return false;
+        }
+
+        session.AudioMessagesThisWindow++;
+        session.LastAudioAt = now;
+        session.LastActivityAt = now;
+        return true;
+    }
+
+    private void LogRateLimit(NetPeer peer, string category)
+        => _logger.LogWarning("Peer {Peer} exceeded {Category} rate limit", peer, category);
+
+    private static void SendEnvelope(NetPeer peer, MessageType type, uint sessionId, byte[] payload)
     {
         var envelope = new MessageEnvelope
         {
@@ -506,6 +601,12 @@ public sealed class SfuServer : INetEventListener, IDisposable
         };
 
         peer.Send(MessagePackSerializer.Serialize(envelope), DeliveryMethod.ReliableOrdered);
+    }
+
+    private static void SendPing(NetPeer peer, uint sessionId)
+    {
+        var payload = BitConverter.GetBytes(CurrentTimestamp());
+        SendEnvelope(peer, MessageType.Ping, sessionId, payload);
     }
 
     private static uint NextSessionId(ref uint nextId)
@@ -540,11 +641,52 @@ public sealed class SfuServer : INetEventListener, IDisposable
         _netManager.Stop();
     }
 
+    private void TickMaintenance()
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastMaintenance < TimeSpan.FromSeconds(1))
+        {
+            return;
+        }
+
+        _lastMaintenance = now;
+        List<(NetPeer Peer, uint SessionId)> pingList = [];
+        List<NetPeer> disconnectList = [];
+
+        lock (_gate)
+        {
+            foreach (var (peer, session) in _sessions)
+            {
+                var idle = now - session.LastActivityAt;
+                if (idle >= TimeoutInterval)
+                {
+                    disconnectList.Add(peer);
+                }
+                else if (idle >= KeepAliveInterval && now - session.LastPingSentAt >= KeepAliveInterval)
+                {
+                    session.LastPingSentAt = now;
+                    pingList.Add((peer, session.SessionId));
+                }
+            }
+        }
+
+        foreach (var (peer, sessionId) in pingList)
+        {
+            SendPing(peer, sessionId);
+        }
+
+        foreach (var peer in disconnectList)
+        {
+            peer.Disconnect();
+        }
+    }
+
     private async Task PumpAsync(CancellationToken token)
     {
         while (!token.IsCancellationRequested)
         {
             _netManager.PollEvents();
+            TickMaintenance();
             await Task.Delay(10, token).ConfigureAwait(false);
         }
     }
@@ -560,6 +702,13 @@ public sealed class SfuServer : INetEventListener, IDisposable
         public double LastRms { get; set; }
         public int LatencyMs { get; set; }
         public DateTimeOffset LastAudioAt { get; set; }
+        public DateTimeOffset LastControlAt { get; set; }
+        public DateTimeOffset LastActivityAt { get; set; }
+        public DateTimeOffset ControlWindowStart { get; set; }
+        public int ControlMessagesThisWindow { get; set; }
+        public DateTimeOffset AudioWindowStart { get; set; }
+        public int AudioMessagesThisWindow { get; set; }
+        public DateTimeOffset LastPingSentAt { get; set; }
     }
 
     private sealed class NetPeerComparer : IEqualityComparer<NetPeer>

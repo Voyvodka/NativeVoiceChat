@@ -1,20 +1,20 @@
-using System.Threading;
 using Avalonia;
-using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.ReactiveUI;
 
 namespace UltraVoice.Client;
 
 internal static class Program
 {
-    private const string MutexName = @"Global\UltraVoice.Client.Singleton";
-    private static Mutex? _mutex;
-
     [STAThread]
     public static void Main(string[] args)
     {
+#if DEBUG
+        BuildAvaloniaApp()
+            .StartWithClassicDesktopLifetime(args);
+#else
+        const string MutexName = @"Global\UltraVoice.Client.Singleton";
         var createdNew = false;
-        _mutex = new Mutex(initiallyOwned: true, MutexName, out createdNew);
+        using var mutex = new Mutex(initiallyOwned: true, MutexName, out createdNew);
 
         if (!createdNew)
         {
@@ -22,16 +22,9 @@ internal static class Program
             return;
         }
 
-        try
-        {
-            BuildAvaloniaApp()
-                .StartWithClassicDesktopLifetime(args);
-        }
-        finally
-        {
-            _mutex.ReleaseMutex();
-            _mutex.Dispose();
-        }
+        BuildAvaloniaApp()
+            .StartWithClassicDesktopLifetime(args);
+#endif
     }
 
     public static AppBuilder BuildAvaloniaApp()

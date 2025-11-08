@@ -33,7 +33,7 @@ public sealed class ConfigStore
         }
     }
 
-    public async Task SaveAsync(ClientConfig config)
+    public static async Task SaveAsync(ClientConfig config)
     {
         try
         {

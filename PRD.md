@@ -28,7 +28,7 @@
 ### 4. Timeline & Milestones (2025)
 1. **Şubat–Mart**: Sunucu iskeleti (JOIN/LEAVE/forward/state), temel CI.
 2. **Nisan–Mayıs**: İstemci ses yolu (capture→Opus encode→LiteNetLib send / receive→decode→mix).
-3. **Haziran**: UI/kalıcılık (Avalonia), konfigürasyon formatı, temel telemetri.
+3. **Haziran**: UI/kalıcılık (Avalonia), konfigürasyon formatı, basit RTT telemetrisi.
 4. **Temmuz**: Beta 1 — iç ekip testi; paket kaybı ve cihaz değiştirme senaryoları ölçümü.
 5. **Ağustos**: Aktif konuşmacı seçici (RMS tabanlı top-2), agresif optimizasyonlar.
 6. **Eylül**: Beta 2 — 6 istemcili saha testi, telemetri incelemesi.
@@ -40,7 +40,7 @@
   - Merkezi SFU sunucu (tek VPS; 1 vCPU/512 MB).
   - UDP tabanlı iletişim (LiteNetLib) ve Opus VOIP codec.
   - Per-user volume/mute, giriş/çıkış cihaz seçimi, top-2 aktif konuşmacı stratejisi.
-  - Temel telemetri (CPU, RAM, RTT, jitter, kayıp oranı).
+  - basit RTT telemetrisi (CPU, RAM, RTT, jitter, kayıp oranı).
 - **Out of scope**
   - NAT traversal için TURN/ICE.
   - Mobil ve macOS istemcileri.
