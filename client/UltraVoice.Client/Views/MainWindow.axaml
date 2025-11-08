@@ -39,9 +39,6 @@
                         IsSnapToTickEnabled="True" />
                 <TextBlock VerticalAlignment="Center"
                            Text="{Binding ConnectionStatus}" />
-                <TextBlock VerticalAlignment="Center"
-                           Text="{Binding TelemetrySummary}"
-                           Margin="12,0,0,0" />
             </StackPanel>
         </Border>
 
@@ -123,7 +120,16 @@
                 BorderBrush="{DynamicResource ThemeBorderLowBrush}"
                 BorderThickness="0,1,0,0"
                 Padding="12">
-            <TextBlock Text="{Binding FooterStatus}" />
+            <Grid ColumnDefinitions="*,Auto"
+                  VerticalAlignment="Center">
+                <TextBlock Text="{Binding FooterStatus}"
+                           VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1"
+                           Text="{Binding TelemetrySummary}"
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Center"
+                           Margin="12,0,0,0" />
+            </Grid>
         </Border>
     </Grid>
 </Window>

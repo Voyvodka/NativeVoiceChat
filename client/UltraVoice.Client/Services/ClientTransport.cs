@@ -15,11 +15,16 @@ public sealed class ClientTransport : INetEventListener, IDisposable
     private readonly NetManager _netManager;
     private IAudioSink? _audioSink;
     private NetPeer? _serverPeer;
-    private CancellationTokenSource? _cts;
+    private CancellationTokenSource? _pumpCts;
     private Task? _pumpTask;
+    private CancellationTokenSource? _reconnectCts;
+    private Task? _reconnectTask;
+    private string? _desiredRoomId;
     private uint _sessionId;
     private uint _lastPingSentMs;
     private double _lastRttMs;
+    private static readonly TimeSpan ReconnectIdleDelay = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(5);
 
     public ClientTransport(AppState state, ClientConfig config)
     {
@@ -35,9 +40,16 @@ public sealed class ClientTransport : INetEventListener, IDisposable
 
     public Task ConnectAsync()
     {
+        EnsurePumpStarted();
+        BeginConnect();
+        return Task.CompletedTask;
+    }
+
+    private void EnsurePumpStarted()
+    {
         if (_netManager.IsRunning)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         if (!_netManager.Start())
@@ -45,14 +57,20 @@ public sealed class ClientTransport : INetEventListener, IDisposable
             throw new InvalidOperationException("Failed to start client NetManager");
         }
 
-        using var _ = _cts = new CancellationTokenSource();
-        _pumpTask = Task.Run(() => PumpAsync(_cts.Token), CancellationToken.None);
+        _pumpCts = new CancellationTokenSource();
+        _pumpTask = Task.Run(() => PumpAsync(_pumpCts.Token), CancellationToken.None);
+    }
 
-        _state.SetConnectionStatus("Connecting...");
+    private void BeginConnect()
+    {
+        if (_serverPeer is { ConnectionState: not ConnectionState.Disconnected })
+        {
+            return;
+        }
+
+        _state.SetConnectionStatus("Bağlanılıyor...");
         UpdateTelemetry(null);
         _serverPeer = _netManager.Connect(_config.Server.Host, _config.Server.Port, string.Empty);
-
-        return Task.CompletedTask;
     }
 
     public async Task JoinRoomAsync(string roomId)
@@ -62,30 +80,10 @@ public sealed class ClientTransport : INetEventListener, IDisposable
             throw new InvalidOperationException("Username must be set before joining a room.");
         }
 
+        _desiredRoomId = roomId;
         await ConnectAsync();
 
-        if (_serverPeer is null)
-        {
-            throw new InvalidOperationException("Server peer not connected.");
-        }
-
-        var hello = new HelloMessage
-        {
-            Username = _config.Username,
-            RoomId = roomId,
-            Token = _config.Server.Token
-        };
-
-        var envelope = new MessageEnvelope
-        {
-            Type = MessageType.Hello,
-            SessionId = _sessionId,
-            Sequence = 0,
-            TimestampMs = CurrentTimestamp(),
-            Payload = MessagePackSerializer.Serialize(hello)
-        };
-
-        _serverPeer.Send(MessagePackSerializer.Serialize(envelope), DeliveryMethod.ReliableOrdered);
+        TrySendHello();
     }
 
     void INetEventListener.OnConnectionRequest(ConnectionRequest request)
@@ -95,8 +93,9 @@ public sealed class ClientTransport : INetEventListener, IDisposable
 
     void INetEventListener.OnNetworkError(IPEndPoint endPoint, SocketError socketError)
     {
-        _state.SetConnectionStatus($"Error: {socketError}");
+        _state.SetConnectionStatus($"Bağlanılamadı: {socketError}");
         UpdateTelemetry(null);
+        StartReconnectLoop();
     }
 
     void INetEventListener.OnNetworkLatencyUpdate(NetPeer peer, int latency)
@@ -106,13 +105,23 @@ public sealed class ClientTransport : INetEventListener, IDisposable
 
     void INetEventListener.OnPeerConnected(NetPeer peer)
     {
-        _state.SetConnectionStatus("Connected - awaiting welcome");
+        _serverPeer = peer;
+        _state.SetConnectionStatus("Bağlandı");
+        StopReconnectLoop();
+        TrySendHello();
     }
 
     void INetEventListener.OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
     {
-        _state.SetConnectionStatus($"Disconnected: {disconnectInfo.Reason}");
+        if (ReferenceEquals(_serverPeer, peer))
+        {
+            _serverPeer = null;
+        }
+
+        _sessionId = 0;
+        _state.SetConnectionStatus($"Bağlanılamadı: {disconnectInfo.Reason}");
         UpdateTelemetry(null);
+        StartReconnectLoop();
     }
 
     void INetEventListener.OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod deliveryMethod)
@@ -144,7 +153,8 @@ public sealed class ClientTransport : INetEventListener, IDisposable
             case MessageType.Welcome:
                 var welcome = MessagePackSerializer.Deserialize<WelcomeMessage>(envelope.Payload);
                 _sessionId = welcome.SessionId;
-                _state.SetConnectionStatus($"Connected as {_config.Username}");
+                _state.SetConnectionStatus($"Bağlandı ({_config.Username})");
+                StopReconnectLoop();
                 break;
             case MessageType.State:
                 var state = MessagePackSerializer.Deserialize<StateMessage>(envelope.Payload);
@@ -163,6 +173,37 @@ public sealed class ClientTransport : INetEventListener, IDisposable
             default:
                 break;
         }
+    }
+
+    private void TrySendHello()
+    {
+        if (_serverPeer is null || _serverPeer.ConnectionState != ConnectionState.Connected)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_desiredRoomId))
+        {
+            return;
+        }
+
+        var hello = new HelloMessage
+        {
+            Username = _config.Username,
+            RoomId = _desiredRoomId,
+            Token = _config.Server.Token
+        };
+
+        var envelope = new MessageEnvelope
+        {
+            Type = MessageType.Hello,
+            SessionId = _sessionId,
+            Sequence = 0,
+            TimestampMs = CurrentTimestamp(),
+            Payload = MessagePackSerializer.Serialize(hello)
+        };
+
+        _serverPeer.Send(MessagePackSerializer.Serialize(envelope), DeliveryMethod.ReliableOrdered);
     }
 
     private void HandlePing(byte[] payload)
@@ -284,10 +325,93 @@ public sealed class ClientTransport : INetEventListener, IDisposable
         _serverPeer.Send(MessagePackSerializer.Serialize(envelope), DeliveryMethod.ReliableOrdered);
     }
 
+    private void StartReconnectLoop()
+    {
+        if (string.IsNullOrWhiteSpace(_desiredRoomId))
+        {
+            return;
+        }
+
+        if (_reconnectTask is { IsCompleted: false })
+        {
+            return;
+        }
+
+        _reconnectCts = new CancellationTokenSource();
+        _reconnectTask = Task.Run(() => ReconnectLoopAsync(_reconnectCts.Token), CancellationToken.None);
+    }
+
+    private void StopReconnectLoop()
+    {
+        if (_reconnectCts is null)
+        {
+            return;
+        }
+
+        _reconnectCts.Cancel();
+        _reconnectCts = null;
+        _reconnectTask = null;
+    }
+
+    private async Task ReconnectLoopAsync(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            var isConnected = _serverPeer is { ConnectionState: not ConnectionState.Disconnected };
+            if (isConnected || string.IsNullOrWhiteSpace(_desiredRoomId))
+            {
+                try
+                {
+                    await Task.Delay(ReconnectIdleDelay, token).ConfigureAwait(false);
+                }
+                catch (TaskCanceledException)
+                {
+                    break;
+                }
+
+                continue;
+            }
+
+            try
+            {
+                await ConnectAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                _state.SetConnectionStatus("Bağlanılamadı");
+            }
+
+            try
+            {
+                await Task.Delay(ReconnectDelay, token).ConfigureAwait(false);
+            }
+            catch (TaskCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
     public void Dispose()
     {
-        _cts?.Cancel();
-        _pumpTask?.GetAwaiter().GetResult();
+        _reconnectCts?.Cancel();
+        _pumpCts?.Cancel();
+        try
+        {
+            _reconnectTask?.GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        try
+        {
+            _pumpTask?.GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
         _netManager.Stop();
     }
 
@@ -298,7 +422,7 @@ public sealed class ClientTransport : INetEventListener, IDisposable
         var host = _config.Server.Host;
         var port = _config.Server.Port;
         var baseText = $"Server {host}:{port}";
-        var text = rttMs.HasValue ? $"{baseText} • RTT {rttMs.Value} ms" : baseText;
+        var text = rttMs.HasValue ? $"{baseText} | RTT {rttMs.Value} ms" : baseText;
         _state.SetTelemetry(text);
     }
 }
@@ -307,3 +431,4 @@ public interface IAudioSink
 {
     void HandleAudio(uint sessionId, AudioFrameMessage frame);
 }
+

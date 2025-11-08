@@ -1,4 +1,5 @@
 using MessagePack;
+using UltraVoice.Shared.Configuration;
 
 namespace UltraVoice.Shared.Wire;
 
@@ -9,7 +10,7 @@ public sealed class HelloMessage
     public string Username { get; init; } = string.Empty;
 
     [Key(1)]
-    public string RoomId { get; init; } = "room-a";
+    public string RoomId { get; init; } = RoomCatalog.DefaultRoom;
 
     [Key(2)]
     public string? Token { get; init; }

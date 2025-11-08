@@ -11,7 +11,7 @@ public sealed class ServerConfig
     public int Port { get; set; } = 40000;
 
     [JsonPropertyName("rooms")]
-    public string[] Rooms { get; set; } = ["room-a", "room-b", "room-c"];
+    public string[] Rooms { get; set; } = RoomCatalog.CreateDefaultRooms();
 
     [JsonPropertyName("maxUsersPerRoom")]
     public int MaxUsersPerRoom { get; set; } = 16;

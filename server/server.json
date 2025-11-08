@@ -1,9 +1,9 @@
 {
   "port": 40000,
   "rooms": [
-    "room-a",
-    "room-b",
-    "room-c"
+    "Man Cave",
+    "Genel",
+    "Chill Cave"
   ],
   "maxUsersPerRoom": 16,
   "sharedToken": null

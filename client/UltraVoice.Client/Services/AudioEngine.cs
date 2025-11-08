@@ -1,6 +1,4 @@
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using Concentus.Enums;
@@ -8,7 +6,6 @@ using Concentus.Structs;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using UltraVoice.Client.Services.Audio;
-using UltraVoice.Shared.Configuration;
 using UltraVoice.Shared.Audio;
 
 namespace UltraVoice.Client.Services;

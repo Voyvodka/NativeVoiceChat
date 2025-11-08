@@ -11,7 +11,7 @@ public sealed class ClientConfig
     public string Username { get; set; } = string.Empty;
 
     [JsonPropertyName("lastRoom")]
-    public string LastRoom { get; set; } = "room-a";
+    public string LastRoom { get; set; } = RoomCatalog.DefaultRoom;
 
     [JsonPropertyName("inputGainDb")]
     public double InputGainDb { get; set; } = 0;

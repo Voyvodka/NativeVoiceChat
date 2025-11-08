@@ -230,11 +230,11 @@ public sealed class SfuServer : INetEventListener, IDisposable
 
         if (!_rooms.ContainsKey(hello.RoomId))
         {
-            _logger.LogInformation("Peer {Peer} requested unknown room {Room}, defaulting to room-a", peer, hello.RoomId);
+            _logger.LogInformation("Peer {Peer} requested unknown room {Room}, defaulting to {Default}", peer, hello.RoomId, RoomCatalog.DefaultRoom);
             hello = new HelloMessage
             {
                 Username = hello.Username,
-                RoomId = "room-a",
+                RoomId = RoomCatalog.DefaultRoom,
                 Token = hello.Token
             };
         }

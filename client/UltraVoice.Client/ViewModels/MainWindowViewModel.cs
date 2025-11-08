@@ -1,4 +1,7 @@
-﻿using System.Collections.ObjectModel;
+﻿using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Linq;
 using System.Reactive;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
@@ -27,7 +30,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private ObservableCollection<UserViewModel> users = [];
 
     [ObservableProperty]
-    private string connectionStatus = "Disconnected";
+    private string connectionStatus = "Bağlı değil";
 
     [ObservableProperty]
     private string telemetrySummary = string.Empty;
@@ -113,7 +116,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         SelectedOutputDevice = FindDevice(OutputDevices, _state.Configuration.OutputDeviceId)
             ?? OutputDevices.FirstOrDefault();
 
-        FooterStatus = $"Ready — target server {_state.Configuration.Server.Host}:{_state.Configuration.Server.Port}";
+        FooterStatus = $"Ready - target server {_state.Configuration.Server.Host}:{_state.Configuration.Server.Port}";
     }
 
     public async Task SetUsernameAsync(string username)

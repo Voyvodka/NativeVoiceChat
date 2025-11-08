@@ -47,7 +47,7 @@ public sealed class AppState
     {
         Configuration = config;
         Configuration.Username = NormalizeUsername(Configuration.Username);
-        var fallbackRoom = string.IsNullOrWhiteSpace(config.LastRoom) ? "room-a" : config.LastRoom;
+        var fallbackRoom = RoomCatalog.Normalize(config.LastRoom);
         _currentRoom = new BehaviorSubject<string>(fallbackRoom);
     }
 
