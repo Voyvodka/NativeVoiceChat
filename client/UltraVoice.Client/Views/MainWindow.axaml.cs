@@ -1,8 +1,10 @@
 using System;
 using System.Threading.Tasks;
 using Avalonia.Controls;
+using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using UltraVoice.Client.ViewModels;
+using UltraVoice.Shared.Configuration;
 
 namespace UltraVoice.Client.Views;
 
@@ -22,6 +24,25 @@ public partial class MainWindow : Window
     {
         base.OnOpened(e);
         _ = EnsureUsernameAndJoinAsync();
+    }
+
+    private async void OnServerSettingsClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainWindowViewModel vm)
+        {
+            return;
+        }
+
+        var snapshot = vm.GetServerEndpointSnapshot();
+        var dialog = new ServerSettingsDialog(snapshot.Host, snapshot.Port, snapshot.Token);
+        var result = await dialog.ShowDialog<ServerEndpoint?>(this);
+
+        if (result is null)
+        {
+            return;
+        }
+
+        await vm.UpdateServerEndpointAsync(result);
     }
 
     private async Task EnsureUsernameAndJoinAsync()

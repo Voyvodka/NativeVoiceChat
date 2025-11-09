@@ -39,6 +39,9 @@
                         IsSnapToTickEnabled="True" />
                 <TextBlock VerticalAlignment="Center"
                            Text="{Binding ConnectionStatus}" />
+                <Button Content="Server"
+                        Margin="12,0,0,0"
+                        Click="OnServerSettingsClick" />
             </StackPanel>
         </Border>
 

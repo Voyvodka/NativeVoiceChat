@@ -8,6 +8,10 @@ namespace UltraVoice.Client.Views;
 
 public partial class ServerSettingsDialog : Window
 {
+    private TextBox HostBoxControl => this.FindControl<TextBox>("HostBox") ?? throw new InvalidOperationException("HostBox not found in dialog XAML.");
+    private TextBox PortBoxControl => this.FindControl<TextBox>("PortBox") ?? throw new InvalidOperationException("PortBox not found in dialog XAML.");
+    private TextBox TokenBoxControl => this.FindControl<TextBox>("TokenBox") ?? throw new InvalidOperationException("TokenBox not found in dialog XAML.");
+
     public ServerSettingsDialog()
     {
         InitializeComponent();
@@ -15,9 +19,9 @@ public partial class ServerSettingsDialog : Window
 
     public ServerSettingsDialog(string host, int port, string? token) : this()
     {
-        HostBox.Text = host;
-        PortBox.Text = port.ToString();
-        TokenBox.Text = token ?? string.Empty;
+        HostBoxControl.Text = host;
+        PortBoxControl.Text = port.ToString();
+        TokenBoxControl.Text = token ?? string.Empty;
     }
 
     private void InitializeComponent()
@@ -27,18 +31,18 @@ public partial class ServerSettingsDialog : Window
 
     private void OnSave(object? sender, RoutedEventArgs e)
     {
-        var host = HostBox.Text?.Trim();
+        var host = HostBoxControl.Text?.Trim();
         if (string.IsNullOrWhiteSpace(host))
         {
             return;
         }
 
-        if (!int.TryParse(PortBox.Text, out var port) || port is < 1 or > 65535)
+        if (!int.TryParse(PortBoxControl.Text, out var port) || port is < 1 or > 65535)
         {
             return;
         }
 
-        var token = string.IsNullOrWhiteSpace(TokenBox.Text) ? null : TokenBox.Text?.Trim();
+        var token = string.IsNullOrWhiteSpace(TokenBoxControl.Text) ? null : TokenBoxControl.Text?.Trim();
         var endpoint = new ServerEndpoint
         {
             Host = host,

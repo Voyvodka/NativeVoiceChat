@@ -7,15 +7,24 @@
         Title="Server Settings"
         WindowStartupLocation="CenterOwner">
   <Grid RowDefinitions="Auto,Auto,Auto,Auto" Margin="16" VerticalAlignment="Center">
-    <Grid RowDefinitions="Auto" ColumnDefinitions="Auto,*" Margin="0,0,0,12">
+    <Grid Grid.Row="0"
+          RowDefinitions="Auto"
+          ColumnDefinitions="Auto,*"
+          Margin="0,0,0,12">
       <TextBlock Text="Host" VerticalAlignment="Center" Margin="0,0,8,0" />
       <TextBox x:Name="HostBox" Grid.Column="1" MinWidth="200" />
     </Grid>
-    <Grid RowDefinitions="Auto" ColumnDefinitions="Auto,*" Margin="0,0,0,12">
+    <Grid Grid.Row="1"
+          RowDefinitions="Auto"
+          ColumnDefinitions="Auto,*"
+          Margin="0,0,0,12">
       <TextBlock Text="Port" VerticalAlignment="Center" Margin="0,0,8,0" />
       <TextBox x:Name="PortBox" Grid.Column="1" />
     </Grid>
-    <Grid RowDefinitions="Auto" ColumnDefinitions="Auto,*" Margin="0,0,0,16">
+    <Grid Grid.Row="2"
+          RowDefinitions="Auto"
+          ColumnDefinitions="Auto,*"
+          Margin="0,0,0,16">
       <TextBlock Text="Token" VerticalAlignment="Center" Margin="0,0,8,0" />
       <TextBox x:Name="TokenBox" Grid.Column="1" />
     </Grid>

@@ -325,6 +325,26 @@ public sealed class ClientTransport : INetEventListener, IDisposable
         _serverPeer.Send(MessagePackSerializer.Serialize(envelope), DeliveryMethod.ReliableOrdered);
     }
 
+    public void Disconnect()
+    {
+        StopReconnectLoop();
+
+        if (_serverPeer is { })
+        {
+            try
+            {
+                _serverPeer.Disconnect();
+            }
+            catch
+            {
+                // ignored
+            }
+        }
+
+        _serverPeer = null;
+        _sessionId = 0;
+    }
+
     private void StartReconnectLoop()
     {
         if (string.IsNullOrWhiteSpace(_desiredRoomId))
@@ -431,4 +451,3 @@ public interface IAudioSink
 {
     void HandleAudio(uint sessionId, AudioFrameMessage frame);
 }
-

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -9,6 +9,7 @@ using System.Reactive.Subjects;
 using CommunityToolkit.Mvvm.ComponentModel;
 using ReactiveUI;
 using UltraVoice.Client.Services;
+using UltraVoice.Shared.Configuration;
 
 namespace UltraVoice.Client.ViewModels;
 
@@ -30,7 +31,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private ObservableCollection<UserViewModel> users = [];
 
     [ObservableProperty]
-    private string connectionStatus = "Bağlı değil";
+    private string connectionStatus = "Bagli degil";
 
     [ObservableProperty]
     private string telemetrySummary = string.Empty;
@@ -56,6 +57,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public ReactiveCommand<string, Unit> JoinRoomCommand { get; }
     public string Username => _state.Configuration.Username;
     public string CurrentRoom => _state.CurrentRoomValue;
+    public ServerEndpoint GetServerEndpointSnapshot() => new()
+    {
+        Host = _state.Configuration.Server.Host,
+        Port = _state.Configuration.Server.Port,
+        Token = _state.Configuration.Server.Token
+    };
 
     public MainWindowViewModel(
         AppState state,
@@ -140,7 +147,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         if (string.IsNullOrWhiteSpace(_state.Configuration.Username))
         {
-            FooterStatus = "LÃ¼tfen Ã¶nce kullanÄ±cÄ± adÄ±nÄ±zÄ± girin.";
+            FooterStatus = "Lütfen önce kullanıcı adınızı girin.";
             return;
         }
 
@@ -156,10 +163,39 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            FooterStatus = $"BaÄŸlantÄ± hatasÄ±: {ex.Message}";
+            FooterStatus = $"Bağlantı hatası: {ex.Message}";
         }
     }
 
+    public async Task UpdateServerEndpointAsync(ServerEndpoint endpoint)
+    {
+        if (endpoint is null)
+        {
+            return;
+        }
+
+        var server = _state.Configuration.Server;
+        var tokenChanged = !string.Equals(server.Token ?? string.Empty, endpoint.Token ?? string.Empty, StringComparison.Ordinal);
+        var changed = !string.Equals(server.Host, endpoint.Host, StringComparison.OrdinalIgnoreCase)
+            || server.Port != endpoint.Port
+            || tokenChanged;
+
+        server.Host = endpoint.Host;
+        server.Port = endpoint.Port;
+        server.Token = endpoint.Token;
+
+        FooterStatus = $"Ready - target server {server.Host}:{server.Port}";
+        await ConfigStore.SaveAsync(_state.Configuration);
+
+        if (!changed)
+        {
+            return;
+        }
+
+        _transport.Disconnect();
+        _state.SetConnectionStatus("Baglaniliyor...");
+        await JoinRoomAsync(CurrentRoom);
+    }
     partial void OnSelectedInputDeviceChanged(AudioDeviceOption? value)
     {
         var id = value?.Id;
@@ -268,4 +304,5 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _userChanges.Dispose();
     }
 }
+
 
